@@ -1,38 +1,28 @@
 
-name: Build EffectCraft CLI (ARMHF)
-
-on:
-  workflow_dispatch:
-  push:
-    tags:
-      - "armhf-v*"
-
-permissions:
-  contents: read
-
-jobs:
-  build-armhf:
-    name: Cross-compile ARMHF CLI
-    runs-on: ubuntu-22.04
-
-    env:
-      TARGET: armv7-unknown-linux-gnueabihf
-      CARGO_TARGET_ARMV7_UNKNOWN_LINUX_GNUEABIHF_LINKER: arm-linux-gnueabihf-gcc
-      CC_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-gcc
-      CXX_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-g++
-      AR_armv7_unknown_linux_gnueabihf: arm-linux-gnueabihf-ar
-      PKG_CONFIG_ALLOW_CROSS: "1"
-      PKG_CONFIG_LIBDIR: /usr/lib/arm-linux-gnueabihf/pkgconfig
-
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v4
-
-      - name: Install ARMHF cross-compiler
+      - name: Configure ARMHF repositories and install cross-compiler
+        shell: bash
         run: |
+          set -euxo pipefail
+
+          # Enable ARMHF as a foreign architecture.
           sudo dpkg --add-architecture armhf
+
+          # Restrict the existing Ubuntu repositories to native AMD64.
+          sudo sed -i '/^deb /s/^deb /deb [arch=amd64] /' \
+            /etc/apt/sources.list
+
+          # Add the correct ARMHF repositories.
+          sudo tee /etc/apt/sources.list.d/armhf-ports.list >/dev/null <<'EOF'
+          deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy main restricted universe multiverse
+          deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy-updates main restricted universe multiverse
+          deb [arch=armhf] https://ports.ubuntu.com/ubuntu-ports jammy-backports main restricted universe multiverse
+          deb [arch=armhf] https://security.ports.ubuntu.com/ubuntu-ports jammy-security main restricted universe multiverse
+          EOF
+
+          # Update package indexes.
           sudo apt-get update
 
+          # Install the cross-compilation toolchain.
           sudo apt-get install -y \
             gcc-arm-linux-gnueabihf \
             g++-arm-linux-gnueabihf \
@@ -41,97 +31,4 @@ jobs:
             libasound2-dev:armhf \
             pkg-config \
             dpkg-dev \
-            file \
-            binutils
-
-      - name: Install Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: armv7-unknown-linux-gnueabihf
-
-      - name: Cache Cargo
-        uses: Swatinem/rust-cache@v2
-        with:
-          key: armhf-cli
-
-      - name: Configure Cargo linker
-        run: |
-          mkdir -p .cargo
-
-          cat >> .cargo/config.toml <<'EOF'
-
-          [target.armv7-unknown-linux-gnueabihf]
-          linker = "arm-linux-gnueabihf-gcc"
-          EOF
-
-      - name: Build EffectCraft CLI
-        run: |
-          cargo build \
-            --release \
-            --locked \
-            --target "$TARGET" \
-            -p effectcraft-cli
-
-      - name: Verify binary architecture
-        run: |
-          BINARY="target/$TARGET/release/effectcraft-cli"
-
-          file "$BINARY"
-          readelf -h "$BINARY"
-
-          readelf --version-info "$BINARY" \
-            | grep -o 'GLIBC_[0-9.]*' \
-            | sort -Vu | tail -1
-
-      - name: Package ARMHF Debian
-        shell: bash
-        run: |
-          VERSION=$(awk '
-            /^\[workspace.package\]/ { found=1; next }
-            found && /^\[/ { exit }
-            found && /^version[[:space:]]*=/ {
-              gsub(/"/, "", $3)
-              print $3
-              exit
-            }
-          ' Cargo.toml)
-
-          DEB_VERSION="${VERSION}-1"
-          ROOT="$RUNNER_TEMP/effectcraft-package"
-
-          mkdir -p "$ROOT/DEBIAN"
-          mkdir -p "$ROOT/usr/bin"
-          mkdir -p "$ROOT/usr/share/doc/effectcraft-cli"
-
-          install -m755 \
-            "target/$TARGET/release/effectcraft-cli" \
-            "$ROOT/usr/bin/effectcraft-cli"
-
-          cp LICENSE-MIT "$ROOT/usr/share/doc/effectcraft-cli/" || true
-          cp LICENSE-APACHE "$ROOT/usr/share/doc/effectcraft-cli/" || true
-          cp README.md "$ROOT/usr/share/doc/effectcraft-cli/"
-
-          cat > "$ROOT/DEBIAN/control" <<EOF
-          Package: effectcraft-cli
-          Version: ${DEB_VERSION}
-          Architecture: armhf
-          Section: graphics
-          Priority: optional
-          Maintainer: EffectCraft ARMHF Builder <builder@example.invalid>
-          Depends: libc6, libgcc-s1, libasound2 | libasound2t64
-          Description: EffectCraft headless rendering CLI
-           Command-line rendering, project automation and MCP tools.
-          EOF
-
-          mkdir -p dist
-
-          dpkg-deb --build --root-owner-group \
-            "$ROOT" \
-            "dist/effectcraft-cli-${VERSION}-linux-armhf.deb"
-
-      - name: Upload ARMHF package
-        uses: actions/upload-artifact@v4
-        with:
-          name: effectcraft-cli-armhf
-          path: dist/*.deb
-          if-no-files-found: error
+            file
